@@ -5,6 +5,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/Brian-Mashavakure/digitize-server/pkg/mistral-service/mistral-handlers"
@@ -98,11 +99,19 @@ func ProcessSingleImageHandler(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, ProcessImageResponse{
-		Message:  fmt.Sprintf("Image '%s' processed successfully", header.Filename),
-		Success:  true,
-		Markdown: markdown,
-	})
+	fontPath := "pkg/fonts/times.ttf"
+	pdfBytes, err := utils.MarkdownToPDF(markdown, fontPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to generate PDF",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.pdf\"", strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))))
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
 }
 
 func ProcessMultipleImagesHandler(c *gin.Context) {

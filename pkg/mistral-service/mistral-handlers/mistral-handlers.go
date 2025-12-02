@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/Brian-Mashavakure/digitize-server/pkg/utils"
 	"github.com/joho/godotenv"
 	"io"
 	"net/http"
 	"os"
-
-	"github.com/Brian-Mashavakure/digitize-server/pkg/utils"
 )
 
 func OCRImageHandler(imageData []byte) (string, error) {
