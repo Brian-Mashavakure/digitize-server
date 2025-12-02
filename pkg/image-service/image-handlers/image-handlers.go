@@ -1,0 +1,215 @@
+package image_handlers
+
+import (
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"strings"
+
+	"github.com/Brian-Mashavakure/digitize-server/pkg/mistral-service/mistral-handlers"
+	"github.com/Brian-Mashavakure/digitize-server/pkg/utils"
+	"github.com/gin-gonic/gin"
+)
+
+type ProcessImageRequest struct {
+	Image *multipart.FileHeader `form:"image" binding:"required"`
+}
+
+type ProcessImageResponse struct {
+	Message  string `json:"message"`
+	Success  bool   `json:"success"`
+	Markdown string `json:"markdown,omitempty"`
+}
+
+type ImageInfo struct {
+	Filename    string `json:"filename"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"content_type"`
+}
+
+type ProcessMultipleImagesResponse struct {
+	Message         string      `json:"message"`
+	Success         bool        `json:"success"`
+	ImagesCount     int         `json:"images_count"`
+	ProcessedImages []ImageInfo `json:"processed_images"`
+}
+
+func ProcessSingleImageHandler(c *gin.Context) {
+	// Parse the multipart form with a max memory of 10 MB
+	if err := c.Request.ParseMultipartForm(10 << 20); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Failed to parse form data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Get the image file from the form
+	file, header, err := c.Request.FormFile("image")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "No image file provided",
+			"details": err.Error(),
+		})
+		return
+	}
+	defer file.Close()
+
+	// Validate file type
+	if !utils.IsValidImageType(header.Filename) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid file type. Only JPEG, PNG, GIF, and WebP images are allowed",
+		})
+		return
+	}
+
+	// Validate file size (max 10 MB)
+	if header.Size > 10<<20 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "File size too large. Maximum size is 10 MB",
+		})
+		return
+	}
+
+	// Read the image data
+	imageData, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to read image data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Validate that we actually have image data
+	contentType := http.DetectContentType(imageData)
+	if !strings.HasPrefix(contentType, "image/") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("File is not a valid image. Detected type: %s", contentType)})
+		return
+	}
+
+	markdown, err := mistral_handlers.OCRImageHandler(imageData)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to process image with OCR",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, ProcessImageResponse{
+		Message:  fmt.Sprintf("Image '%s' processed successfully", header.Filename),
+		Success:  true,
+		Markdown: markdown,
+	})
+}
+
+func ProcessMultipleImagesHandler(c *gin.Context) {
+	// Parse the multipart form with a max memory of 50 MB
+	if err := c.Request.ParseMultipartForm(50 << 20); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Failed to parse form data",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Get the multipart form
+	form := c.Request.MultipartForm
+	if form == nil || form.File["images"] == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "No images provided in the form",
+		})
+		return
+	}
+
+	// Get all files from the "images" field
+	files := form.File["images"]
+	if len(files) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "No images provided",
+		})
+		return
+	}
+
+	// Limit the number of images (max 10)
+	if len(files) > 10 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Too many images. Maximum is 10 images per request",
+		})
+		return
+	}
+
+	var processedImages []ImageInfo
+	var imageDataList [][]byte
+
+	// Process each image
+	for i, fileHeader := range files {
+		// Validate file type
+		if !utils.IsValidImageType(fileHeader.Filename) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("Invalid file type for image %d (%s). Only JPEG, PNG, GIF, and WebP images are allowed", i+1, fileHeader.Filename),
+			})
+			return
+		}
+
+		// Validate file size (max 10 MB per file)
+		if fileHeader.Size > 10<<20 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("File size too large for image %d (%s). Maximum size is 10 MB per image", i+1, fileHeader.Filename),
+			})
+			return
+		}
+
+		// Open the file
+		file, err := fileHeader.Open()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   fmt.Sprintf("Failed to open image %d (%s)", i+1, fileHeader.Filename),
+				"details": err.Error(),
+			})
+			return
+		}
+
+		// Read the image data
+		imageData, err := io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   fmt.Sprintf("Failed to read image %d (%s)", i+1, fileHeader.Filename),
+				"details": err.Error(),
+			})
+			return
+		}
+
+		// Validate that we actually have image data
+		contentType := http.DetectContentType(imageData)
+		if !strings.HasPrefix(contentType, "image/") {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("File %d (%s) is not a valid image. Detected type: %s", i+1, fileHeader.Filename, contentType),
+			})
+			return
+		}
+
+		// Store the image data for AI processing
+		imageDataList = append(imageDataList, imageData)
+		processedImages = append(processedImages, ImageInfo{
+			Filename:    fileHeader.Filename,
+			Size:        fileHeader.Size,
+			ContentType: contentType,
+		})
+	}
+
+	// TODO: Send imageDataList to AI for processing
+	// For now, we'll just return success
+	// The imageDataList variable contains a slice of byte slices, one for each image
+	// You can pass this to your AI service/API for batch processing
+
+	c.JSON(http.StatusOK, ProcessMultipleImagesResponse{
+		Message:         fmt.Sprintf("Successfully received %d images and ready for AI processing", len(files)),
+		Success:         true,
+		ImagesCount:     len(files),
+		ProcessedImages: processedImages,
+	})
+}
