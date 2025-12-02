@@ -5,7 +5,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SetupImageRoutes sets up all image-related routes
 func SetupImageRoutes(router *gin.Engine) {
 	api := router.Group("digitize-api/images")
 

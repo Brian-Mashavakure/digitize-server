@@ -150,8 +150,7 @@ func ProcessMultipleImagesHandler(c *gin.Context) {
 		return
 	}
 
-	var processedImages []ImageInfo
-	var imageDataList [][]byte
+	var markdowns []string
 
 	// Process each image
 	for i, fileHeader := range files {
@@ -201,24 +200,31 @@ func ProcessMultipleImagesHandler(c *gin.Context) {
 			return
 		}
 
-		// Store the image data for AI processing
-		imageDataList = append(imageDataList, imageData)
-		processedImages = append(processedImages, ImageInfo{
-			Filename:    fileHeader.Filename,
-			Size:        fileHeader.Size,
-			ContentType: contentType,
-		})
+		// Process image with OCR
+		markdown, err := mistral_handlers.OCRImageHandler(imageData)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   fmt.Sprintf("Failed to process image %d (%s) with OCR", i+1, fileHeader.Filename),
+				"details": err.Error(),
+			})
+			return
+		}
+
+		markdowns = append(markdowns, markdown)
 	}
 
-	// TODO: Send imageDataList to AI for processing
-	// For now, we'll just return success
-	// The imageDataList variable contains a slice of byte slices, one for each image
-	// You can pass this to your AI service/API for batch processing
+	// Generate PDF from all markdowns
+	fontPath := "pkg/fonts/times.ttf"
+	pdfBytes, err := utils.MultipleMarkdownsToPDF(markdowns, fontPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   "Failed to generate PDF",
+			"details": err.Error(),
+		})
+		return
+	}
 
-	c.JSON(http.StatusOK, ProcessMultipleImagesResponse{
-		Message:         fmt.Sprintf("Successfully received %d images and ready for AI processing", len(files)),
-		Success:         true,
-		ImagesCount:     len(files),
-		ProcessedImages: processedImages,
-	})
+	c.Header("Content-Type", "application/pdf")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"multiple_images.pdf\""))
+	c.Data(http.StatusOK, "application/pdf", pdfBytes)
 }
